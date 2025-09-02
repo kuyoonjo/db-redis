@@ -1,6 +1,6 @@
 [package]
 name = "db-redis"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = [ "kuyoonjo" ]
 description = "redis client"

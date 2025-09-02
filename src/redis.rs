@@ -1,8 +1,8 @@
-use std::fmt::Display;
 use deadpool::managed::Object;
 use redis::{
-    aio::{ConnectionManager, ConnectionManagerConfig}, cluster::ClusterClientBuilder, cluster_async::ClusterConnection, cmd, Client, Cmd, FromRedisValue, PushInfo, RedisError, RedisResult, ToRedisArgs
+    aio::{ConnectionManager, ConnectionManagerConfig}, cluster::ClusterClientBuilder, cluster_async::ClusterConnection, cmd, AsyncCommands, Client, Cmd, FromRedisValue, PushInfo, RedisError, RedisResult, ToRedisArgs
 };
+use std::fmt::Display;
 use tokio::sync::OnceCell;
 
 static REDIS: OnceCell<Pool> = OnceCell::const_new();
@@ -139,10 +139,7 @@ impl Redis {
             command.arg(key);
             command.arg(value);
         }
-        redis
-            .connection
-            .exec(&mut command)
-            .await?;
+        redis.connection.exec(&mut command).await?;
         Ok(())
     }
 
@@ -230,12 +227,9 @@ impl Redis {
         let mut command = cmd("HDEL");
         command.arg(table);
         for key in keys {
-             command.arg(key);
+            command.arg(key);
         }
-        redis
-            .connection
-            .exec(&mut command)
-            .await?;
+        redis.connection.exec(&mut command).await?;
         Ok(())
     }
 
@@ -243,9 +237,20 @@ impl Redis {
     pub async fn hdel_all(table: &str) -> anyhow::Result<()> {
         let table = format!("{}:{}", DB_NAME.get().unwrap(), table);
         let mut redis = Redis::instance().await?;
+        redis.connection.exec(cmd("DEL").arg(table)).await?;
+        Ok(())
+    }
+
+    pub async fn publish<C, M>(channel: C, message: M) -> anyhow::Result<()>
+    where
+        C: ToRedisArgs + Display,
+        M: ToRedisArgs + Send + Sync,
+    {
+        let mut redis = Redis::instance().await?;
+        let channel = format!("{}:{}", DB_NAME.get().unwrap(), channel);
         redis
             .connection
-            .exec(cmd("DEL").arg(table))
+            .publish(channel.as_bytes(), message)
             .await?;
         Ok(())
     }
@@ -308,6 +313,17 @@ impl RedisConnection {
             RedisConnection::Cluster(client) => cmd.exec_async(client).await,
         }
     }
+    async fn publish<C, M>(&mut self, channel: C, message: M) -> RedisResult<()>
+    where
+        C: ToRedisArgs + Send + Sync,
+        M: ToRedisArgs + Send + Sync,
+    {
+        match self {
+            RedisConnection::Single(client) => client.publish(channel, message).await?,
+            RedisConnection::Cluster(client) => client.publish(channel, message).await?,
+        }
+        Ok(())
+    }
 }
 
 /// Initialize Redis connection
@@ -317,8 +333,12 @@ pub async fn init(uri: &str, db_name: &str) -> anyhow::Result<()> {
         uri: uri.to_string(),
     };
     let pool = Pool::builder(mgr).build()?;
-    REDIS.set(pool).map_err(|e| anyhow::anyhow!("Failed to set Redis pool: {}", e))?;
-    DB_NAME.set(db_name.to_string()).map_err(|e| anyhow::anyhow!("Failed to set DB_NAME: {}", e))?;
+    REDIS
+        .set(pool)
+        .map_err(|e| anyhow::anyhow!("Failed to set Redis pool: {}", e))?;
+    DB_NAME
+        .set(db_name.to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to set DB_NAME: {}", e))?;
     tracing::info!("Redis initialized with uri: {}", uri);
     Ok(())
 }
